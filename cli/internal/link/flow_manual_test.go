@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,8 +34,15 @@ func TestRun_ManualCodeWinsWhenTheLoopbackCannotBind(t *testing.T) {
 	deps.TTL = 2 * time.Second
 	deps.Listen = func(string) (Callbacks, error) { return nil, errors.New("permission denied") }
 	deps.Prompt = typed("  abcd-2345 \n")
+	// Report is called from the polling goroutine and the flow's own, so the
+	// recorded lines need a lock for -race.
+	var mu sync.Mutex
 	var lines []string
-	deps.Report = func(line string) { lines = append(lines, line) }
+	deps.Report = func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, line)
+	}
 	var sent string
 	deps.Complete = func(_ context.Context, _, _, handoff string) (pair.Completed, error) {
 		sent = handoff
@@ -51,8 +59,11 @@ func TestRun_ManualCodeWinsWhenTheLoopbackCannotBind(t *testing.T) {
 	if result.Handle != "alice" {
 		t.Fatalf("result = %+v", result)
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), "Paste the code shown in the browser") {
-		t.Fatalf("never offered the prompt: %q", lines)
+	mu.Lock()
+	offered := strings.Join(lines, "\n")
+	mu.Unlock()
+	if !strings.Contains(offered, "Paste the code shown in the browser") {
+		t.Fatalf("never offered the prompt: %q", offered)
 	}
 }
 
